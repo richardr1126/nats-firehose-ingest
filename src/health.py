@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from fastapi import FastAPI, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 

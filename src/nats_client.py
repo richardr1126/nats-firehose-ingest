@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 from typing import Optional
 
@@ -17,7 +15,7 @@ from .config import settings
 log = get_logger(__name__)
 
 
-class NatsService:
+class NatsClient:
     def __init__(self, url: str, stream: str, subject: str, kv_bucket: str, max_retries: int = 3):
         self.url = url
         self.stream = stream

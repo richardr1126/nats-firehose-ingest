@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import threading
 from collections import defaultdict
@@ -7,7 +5,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import time
 from typing import Callable, Optional
-
 from atproto import (
     AtUri,
     CAR,
@@ -19,14 +16,11 @@ from atproto import (
 
 from .logging_setup import get_logger
 
-
 log = get_logger(__name__)
-
 
 _INTERESTED_RECORDS = {
     models.AppBskyFeedPost: models.ids.AppBskyFeedPost,
 }
-
 
 def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> tuple[defaultdict, int]:
     """Extract operations and return (operations_dict, total_event_count)"""
@@ -57,19 +51,13 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> tupl
                 continue
     del car
     return operations_by_type, total_events
-
-
-Callback = Callable[[defaultdict], None]
-
-
-@dataclass
-class CursorState:
-    service: str
-    value: int = 0
-
-
 class FirehoseRunner:
-    def __init__(self, service_name: str, on_ops: Callback, initial_cursor: Optional[int] = None):
+    def __init__(
+            self,
+            service_name: str,
+            on_ops: Callable[[defaultdict], None],
+            initial_cursor: Optional[int] = None
+        ):
         self.service_name = service_name
         self.on_ops = on_ops
         self.cursor = initial_cursor or None
