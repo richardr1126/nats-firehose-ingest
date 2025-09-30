@@ -8,7 +8,9 @@ dependencies = [
     "atproto>=0.0.62",
     "fastapi>=0.118.0",
     "nats-py>=2.11.0",
+    "prometheus-client>=0.23.1",
     "pydantic>=2.11.9",
+    "python-dotenv>=1.1.1",
     "structlog>=25.4.0",
     "uvicorn>=0.37.0",
 ]

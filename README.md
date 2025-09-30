@@ -77,11 +77,6 @@ Configure the service using environment variables:
 - `MIN_TEXT_LENGTH`: Minimum post length (default: `10`)
 - `MAX_TEXT_LENGTH`: Maximum post length (default: `1000`)
 
-### Performance Settings
-- `BATCH_SIZE`: Batch size for NATS publishing (default: `100`)
-- `BATCH_TIMEOUT_MS`: Batch timeout in milliseconds (default: `1000`)
-- `CURSOR_SAVE_INTERVAL`: How often to save cursor to NATS KV (default: `1000`)
-
 ### Monitoring Settings
 - `HEALTH_CHECK_PORT`: Health check server port (default: `8080`)
 - `LOG_LEVEL`: Logging level (default: `INFO`)
@@ -144,12 +139,6 @@ firehose_messages_per_second 1247.3
 ```
 nats-firehose-ingest/
 ├── src/
-│   ├── config.py           # Configuration management
-│   ├── nats_client.py      # NATS JetStream client
-│   ├── firehose_client.py  # ATProto firehose client
-│   ├── filters.py          # Content filtering logic
-│   ├── health.py           # Health check server
-│   └── service.py          # Main service orchestration
 ├── main.py                 # Entry point
 ├── Dockerfile              # Multi-stage Docker build
 ├── k8s-deployment.yaml     # Kubernetes manifests

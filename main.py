@@ -1,18 +1,16 @@
 """Main entry point for NATS Firehose Ingest service."""
 
+import asyncio
 import sys
 
-# Import the main service
-from src.service import main as service_main
+# Import the async service entrypoint
+from src.service import service_main
 
 
 def main():
-    """Entry point that runs the synchronous service."""
+    """Entry point that runs the async service."""
     try:
-        service_main()
-    except KeyboardInterrupt:
-        print("\nService interrupted by user")
-        sys.exit(0)
+        asyncio.run(service_main())
     except Exception as e:
         print(f"Service failed: {e}")
         sys.exit(1)

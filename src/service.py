@@ -1,325 +1,180 @@
-"""Simplified synchronous service for firehose consumption and NATS publishing."""
+from __future__ import annotations
 
-import signal
-import sys
-import time
-import threading
-from typing import Dict, Any, List
-from collections import defaultdict
 import asyncio
-import logging
+import json
+import signal
+from collections import defaultdict
+from typing import Any, Dict
 
-import structlog
-from atproto import models
+import uvicorn
 
 from .config import settings
-from .nats_client import NATSJetStreamClient, PostMessage
-from .firehose_client import FirehoseClient
-from .filters import filter_posts, get_filter_stats
-from .health import HealthCheckServer
+from .filters import PostFilter
+from .firehose import FirehoseRunner
+from .logging_setup import configure_logging, get_logger
+from .metrics import operations_total, messages_per_second, events_per_second, firehose_cursor, ops_queue_size
+from .nats_client import NatsService
+from .health import create_health_api
 
-logger = structlog.get_logger(__name__)
+
+log = get_logger(__name__)
 
 
-class FirehoseIngestService:
-    """Simplified main service for ingesting Bluesky firehose data into NATS JetStream."""
-    
-    def __init__(self):
-        self.nats_client = NATSJetStreamClient()
-        self.health_server = HealthCheckServer(self)
-        self.firehose_client: FirehoseClient = None
-        self.running = False
-        self.shutdown_requested = False
-        
-        # Statistics
-        self.total_operations_processed = 0
-        self.posts_published = 0
-        self.publish_errors = 0
-        
-        # Health check runs in separate thread with its own asyncio loop
-        self.health_thread = None
-        self.health_loop = None
-        
-        # Configure structured logging
-        structlog.configure(
-            processors=[
-                structlog.processors.TimeStamper(fmt="ISO"),
-                structlog.processors.add_log_level,
-                structlog.processors.JSONRenderer() if settings.log_format == "json" 
-                else structlog.dev.ConsoleRenderer(),
-            ],
-            wrapper_class=structlog.make_filtering_bound_logger(
-                getattr(logging, settings.log_level.upper(), logging.INFO)
-            ),
-            context_class=dict,
-            logger_factory=structlog.PrintLoggerFactory(),
-            cache_logger_on_first_use=True,
-        )
-    
-    def start(self) -> None:
-        """Start the firehose ingest service synchronously."""
-        logger.info("Starting NATS Firehose Ingest Service", 
-                   service=settings.service_name,
-                   nats_url=settings.nats_url,
-                   nats_stream=settings.nats_stream)
-        
+async def service_main():
+    configure_logging(settings.LOG_LEVEL, settings.LOG_FORMAT)
+    log.info("service_start", service=settings.SERVICE_NAME)
+
+    # Shared queue for ops from firehose
+    ops_queue: asyncio.Queue[defaultdict] = asyncio.Queue(maxsize=10000)
+
+    # NATS service
+    nats = NatsService(
+        url=settings.NATS_URL,
+        stream=settings.NATS_STREAM,
+        subject=settings.NATS_SUBJECT,
+        kv_bucket=settings.NATS_KV_BUCKET,
+        max_retries=settings.MAX_RETRIES,
+    )
+    await nats.connect()
+
+    # Load cursor
+    cursor = await nats.get_cursor(settings.SERVICE_NAME)
+
+    # Firehose runner
+    def on_ops(operations: defaultdict) -> None:
         try:
-            # Connect to NATS (this will use asyncio.run internally)
-            self._connect_nats()
-            
-            # Start health check server in separate thread
-            self._start_health_server()
-            
-            # Set up signal handlers
-            self._setup_signal_handlers()
-            
-            # Create firehose client with simple callback
-            self.firehose_client = FirehoseClient(self._process_operations_sync)
-            
-            self.running = True
-            logger.info("Service started successfully")
-            
-            # Start firehose client (this will block synchronously)
-            self.firehose_client.start()
-            
-        except Exception as e:
-            logger.error("Failed to start service", error=str(e))
-            self.shutdown()
-            raise
-    
-    def shutdown(self) -> None:
-        """Shutdown the service gracefully."""
-        if self.shutdown_requested:
-            return
-        
-        self.shutdown_requested = True
-        logger.info("Shutting down service")
-        
-        # Stop firehose client
-        if self.firehose_client:
-            self.firehose_client.stop()
-        
-        # Stop health server
-        self._stop_health_server()
-        
-        # Disconnect from NATS
-        self._disconnect_nats()
-        
-        self.running = False
-        logger.info("Service shutdown complete")
-    
-    def _connect_nats(self) -> None:
-        """Connect to NATS synchronously."""
-        self.nats_client.connect_sync()
-        logger.info("Connected to NATS")
-    
-    def _disconnect_nats(self) -> None:
-        """Disconnect from NATS synchronously."""
-        self.nats_client.disconnect_sync()
-        logger.info("Disconnected from NATS")
-    
-    def _start_health_server(self) -> None:
-        """Start health server in separate thread with its own asyncio loop."""
-        def health_thread_target():
-            # Create new event loop for this thread
-            self.health_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.health_loop)
-            
+            ops_queue.put_nowait(operations)
+        except asyncio.QueueFull:
+            # Backpressure: drop if overloaded
+            pass
+
+    firehose = FirehoseRunner(settings.SERVICE_NAME, on_ops, initial_cursor=cursor)
+    firehose.start()
+
+    # Web server
+    app = create_health_api()
+    config = uvicorn.Config(app, host="0.0.0.0", port=settings.HEALTH_CHECK_PORT, log_level="info")
+    server = uvicorn.Server(config)
+
+    # Filtering
+    post_filter = PostFilter(
+        enable_text_filtering=settings.ENABLE_TEXT_FILTERING,
+        min_len=settings.MIN_TEXT_LENGTH,
+        max_len=settings.MAX_TEXT_LENGTH,
+    )
+
+    stop_event = asyncio.Event()
+
+    def _handle_signal():
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _handle_signal)
+
+    # Producer metrics
+    last_matched_count = 0  # Matched posts that passed filters
+    last_events_count = 0   # Total events processed
+    window = 2.0
+
+    async def process_ops():
+        nonlocal last_matched_count, last_events_count
+        processed = 0
+        last_save = 0
+        while not stop_event.is_set():
             try:
-                # Start health server in this loop
-                self.health_loop.run_until_complete(self.health_server.start())
-                # Keep the loop running
-                self.health_loop.run_forever()
-            except Exception as e:
-                logger.error("Health server thread failed", error=str(e))
-            finally:
-                self.health_loop.close()
-        
-        self.health_thread = threading.Thread(target=health_thread_target, daemon=True)
-        self.health_thread.start()
-        
-        # Give it a moment to start
-        time.sleep(0.5)
-        logger.info("Health server started in separate thread")
-    
-    def _stop_health_server(self) -> None:
-        """Stop health server."""
-        if self.health_loop and self.health_loop.is_running():
-            # Schedule stop in health loop
-            asyncio.run_coroutine_threadsafe(
-                self.health_server.stop(), 
-                self.health_loop
-            )
-            
-            # Stop the event loop
-            self.health_loop.call_soon_threadsafe(self.health_loop.stop)
-        
-        if self.health_thread and self.health_thread.is_alive():
-            self.health_thread.join(timeout=5.0)
-        
-        logger.info("Health server stopped")
-    
-    def _setup_signal_handlers(self) -> None:
-        """Setup signal handlers for graceful shutdown."""
-        def signal_handler(signum, frame):
-            logger.info("Received shutdown signal", signal=signum)
-            self.shutdown()
-        
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-    
-    def _process_operations_sync(self, operations: Dict[str, Dict[str, List]]) -> None:
-        """Handle operations from the firehose synchronously."""
-        try:
-            self.total_operations_processed += 1
-            
-            # Process posts for the specific collection (app.bsky.feed.post)
-            for collection, ops in operations.items():
-                created_posts = ops.get('created', [])
-                
-                if created_posts:
-                    logger.debug("Processing posts", collection=collection, count=len(created_posts))
-                    
-                    posts_to_publish = []
-                    for post_message in created_posts:
-                        # Apply filters
-                        if filter_posts([post_message]):
-                            posts_to_publish.append(post_message)
-                    
-                    # Publish all filtered posts synchronously
-                    if posts_to_publish:
-                        for post in posts_to_publish:
-                            self._publish_post_sync(post)
-            
-            # Log statistics periodically
-            if self.total_operations_processed % 100 == 0:
-                self._log_statistics()
-                
-        except Exception as e:
-            logger.error("Failed to process operations", error=str(e), exc_info=True)
-    
-    def _publish_post_sync(self, post: PostMessage) -> None:
-        """Publish a single post to NATS synchronously."""
-        try:
-            logger.debug("Publishing post to NATS", uri=post.uri, author=post.author_did)
-            
-            # Use synchronous publish method
-            success = self.nats_client.publish_post_sync(post)
-            
-            if success:
-                self.posts_published += 1
-                logger.debug("Post published successfully", uri=post.uri)
-            else:
-                self.publish_errors += 1
-                logger.warning("Post publish returned False", uri=post.uri)
-                
-        except Exception as e:
-            logger.error("Failed to publish post", 
-                        uri=post.uri, 
-                        error=str(e),
-                        exc_info=True)
-            self.publish_errors += 1
-    
-    def _log_statistics(self) -> None:
-        """Log service statistics."""
-        nats_stats = self.nats_client.get_stats()
-        firehose_stats = self.firehose_client.get_stats() if self.firehose_client else {}
-        filter_stats = get_filter_stats()
-        
-        # Get cursor status synchronously
-        cursor_status = {}
-        if self.firehose_client and self.firehose_client.cursor_state:
+                operations = await asyncio.wait_for(ops_queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+
+            # Extract total event count from firehose
+            events_batch = operations.pop('_event_count', 0)
+            last_events_count += events_batch
+
+            # Increment operations counter for visibility
+            count_batch = 0
+
+            created_posts = operations.get("app.bsky.feed.post", {}).get("created", [])
+            for post in created_posts:
+                record = post.get("record")
+                text = getattr(record, "text", None)
+                if not post_filter.allow(text):
+                    continue
+
+                # Build payload
+                payload: Dict[str, Any] = {
+                    "uri": post.get("uri"),
+                    "cid": post.get("cid"),
+                    "author": post.get("author"),
+                    "text": text,
+                }
+                data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+                try:
+                    await nats.publish_json("posts", data)
+                except Exception as e:
+                    log.error("publish_failed", error=str(e))
+                count_batch += 1
+
+            operations_total.inc(count_batch)
+            processed += count_batch
+
+            # Save cursor periodically via NATS KV using latest commit seq propagated by FirehoseRunner
+            last_save += 1
+            if last_save >= settings.CURSOR_SAVE_INTERVAL:
+                last_save = 0
+                try:
+                    await nats.save_cursor(settings.SERVICE_NAME, firehose.cursor)
+                except Exception:
+                    pass
+
+            # Update matched posts count
+            last_matched_count += count_batch
+
+    async def update_rate():
+        nonlocal last_matched_count, last_events_count
+        while not stop_event.is_set():
+            await asyncio.sleep(window)
+            messages_per_second.set(last_matched_count / window)
+            events_per_second.set(last_events_count / window)
+            last_matched_count = 0
+            last_events_count = 0
+
+    async def run_server():
+        await server.serve()
+
+    async def periodic_stats_logger():
+        # Log every 20 seconds
+        while not stop_event.is_set():
+            await asyncio.sleep(20)
             try:
-                async def get_cursor_status():
-                    return await self.firehose_client.cursor_state.get_cursor_status()
-                
-                cursor_status = asyncio.run(get_cursor_status())
+                # Update gauges
+                firehose_cursor.set(float(firehose.cursor))
+                ops_queue_size.set(ops_queue.qsize())
+                mps = messages_per_second._value.get()
+                eps = events_per_second._value.get()
+                # Log stats
+                log.info(
+                    "stats",
+                    cursor=firehose.cursor,
+                    queue_size=ops_queue.qsize(),
+                    matched_per_second=mps,
+                    events_per_second=eps,
+                )
             except Exception as e:
-                cursor_status = {"error": str(e)}
-        
-        logger.info("Service statistics",
-                   service_stats={
-                       "operations_processed": self.total_operations_processed,
-                       "posts_published": self.posts_published,
-                       "publish_errors": self.publish_errors,
-                       "running": self.running,
-                   },
-                   nats_stats=nats_stats,
-                   firehose_stats=firehose_stats,
-                   filter_stats=filter_stats,
-                   cursor_status=cursor_status)
-    
-    def get_health_status(self) -> Dict[str, Any]:
-        """Get service health status."""
-        nats_healthy = self.nats_client.connected
-        firehose_healthy = (
-            self.firehose_client.is_healthy() 
-            if self.firehose_client else False
-        )
-        
-        return {
-            "service": "nats-firehose-ingest",
-            "status": "healthy" if (nats_healthy and firehose_healthy and self.running) else "unhealthy",
-            "timestamp": time.time(),
-            "components": {
-                "nats": {
-                    "status": "healthy" if nats_healthy else "unhealthy",
-                    "connected": nats_healthy,
-                    "stats": self.nats_client.get_stats(),
-                },
-                "firehose": {
-                    "status": "healthy" if firehose_healthy else "unhealthy",
-                    "running": self.firehose_client.running if self.firehose_client else False,
-                    "stats": self.firehose_client.get_stats() if self.firehose_client else {},
-                },
-                "filters": {
-                    "status": "healthy",
-                    "stats": get_filter_stats(),
-                },
-            },
-            "service_stats": {
-                "operations_processed": self.total_operations_processed,
-                "posts_published": self.posts_published,
-                "publish_errors": self.publish_errors,
-                "uptime_seconds": (
-                    self.firehose_client.get_stats().get("uptime_seconds", 0)
-                    if self.firehose_client else 0
-                ),
-            },
-        }
-    
-    def perform_health_check(self) -> bool:
-        """Perform an active health check synchronously."""
-        try:
-            # Check NATS connection
-            if not self.nats_client.health_check_sync():
-                return False
-            
-            # Check firehose client
-            if not self.firehose_client or not self.firehose_client.is_healthy():
-                return False
-            
-            return True
-            
-        except Exception as e:
-            logger.error("Health check failed", error=str(e))
-            return False
+                log.warning("stats_log_failed", error=str(e))
 
+    # Run tasks concurrently
+    tasks = [
+        asyncio.create_task(process_ops()),
+        asyncio.create_task(update_rate()),
+        asyncio.create_task(run_server()),
+        asyncio.create_task(periodic_stats_logger()),
+    ]
 
-def main():
-    """Main entry point for the service (synchronous)."""
-    service = FirehoseIngestService()
-    
-    try:
-        service.start()
-    except KeyboardInterrupt:
-        logger.info("Received keyboard interrupt")
-    except Exception as e:
-        logger.error("Service failed", error=str(e))
-        sys.exit(1)
-    finally:
-        service.shutdown()
-
-
-if __name__ == "__main__":
-    main()
+    await stop_event.wait()
+    firehose.stop()
+    for t in tasks:
+        t.cancel()
+    await nats.close()
+    log.info("service_stop")
