@@ -1,0 +1,16 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+
+ENV UV_PROJECT_ENVIRONMENT="/usr/local/"
+ENV UV_COMPILE_BYTECODE=1
+
+COPY pyproject.toml .
+COPY uv.lock .
+RUN pip install --no-cache-dir uv
+RUN uv sync --frozen --no-install-project --no-dev
+
+COPY src/ ./src/
+COPY main.py .
+
+CMD ["python", "main.py"]

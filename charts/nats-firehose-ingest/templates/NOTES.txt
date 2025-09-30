@@ -1,0 +1,60 @@
+🚀 NATS Firehose Ingest has been deployed successfully!
+
+📊 Service Information:
+  Name: {{ include "nats-firehose-ingest.fullname" . }}
+  Namespace: {{ .Release.Namespace }}
+  Image: {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+
+🔍 Health Check & Monitoring:
+{{- if contains "ClusterIP" .Values.service.type }}
+  # Get pod name
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "nats-firehose-ingest.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  
+  # Port forward to access health endpoints
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8080:8080
+  
+  # Then access these endpoints:
+  ✅ Health Check:     http://localhost:8080/health
+  📋 Detailed Health:  http://localhost:8080/health/detailed
+  🎯 Readiness:        http://localhost:8080/ready
+  📈 Metrics:          http://localhost:8080/metrics
+
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "nats-firehose-ingest.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  
+  ✅ Health Check:     http://$NODE_IP:$NODE_PORT/health
+  📋 Detailed Health:  http://$NODE_IP:$NODE_PORT/health/detailed
+  🎯 Readiness:        http://$NODE_IP:$NODE_PORT/ready
+  📈 Metrics:          http://$NODE_IP:$NODE_PORT/metrics
+
+{{- else if contains "LoadBalancer" .Values.service.type }}
+     NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+           You can watch its status by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "nats-firehose-ingest.fullname" . }}'
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "nats-firehose-ingest.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  
+  ✅ Health Check:     http://$SERVICE_IP:{{ .Values.service.port }}/health
+  📋 Detailed Health:  http://$SERVICE_IP:{{ .Values.service.port }}/health/detailed
+  🎯 Readiness:        http://$SERVICE_IP:{{ .Values.service.port }}/ready
+  📈 Metrics:          http://$SERVICE_IP:{{ .Values.service.port }}/metrics
+{{- end }}
+
+📝 Useful Commands:
+  # View logs
+  kubectl logs --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "nats-firehose-ingest.name" . }}" -f
+
+  # Get pod status
+  kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "nats-firehose-ingest.name" . }}"
+
+  # Check service status
+  kubectl get svc --namespace {{ .Release.Namespace }} {{ include "nats-firehose-ingest.fullname" . }}
+
+  # View environment variables
+  kubectl get secret --namespace {{ .Release.Namespace }} {{ (index .Values.envFrom 0).secretRef.name | default "nats-firehose-ingest-env" }} -o yaml
+
+🔧 Configuration:
+  Secret Name: nats-firehose-ingest-env
+  
+📚 Documentation: https://github.com/richardr1126/nats-firehose-ingest
+
+Happy streaming! 🌊
