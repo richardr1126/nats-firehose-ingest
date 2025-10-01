@@ -205,14 +205,18 @@ class Service:
                 self.last_events_count = 0
                 self._last_stats_time = now
 
-                # Log stats
-                log.info(
-                    "ingest stats",
-                    cursor=self.firehose.cursor if self.firehose is not None else None,
-                    queue_size=self.ops_queue.qsize(),
-                    matched_per_second=mps_rate,
-                    events_per_second=eps_rate,
+                # Log stats with formatted output
+                stats_msg = (
+                    "\n" + "="*30 +
+                    "\n  Ingest Statistics" +
+                    "\n" + "="*30 +
+                    f"\n  Cursor:              {self.firehose.cursor if self.firehose is not None else 'N/A'}" +
+                    f"\n  Queue Size:          {self.ops_queue.qsize()}" +
+                    f"\n  Matched/sec:         {mps_rate}" +
+                    f"\n  Events/sec:          {eps_rate}" +
+                    "\n" + "="*30
                 )
+                log.info(stats_msg)
             except Exception as e:
                 log.warning("stats_log_failed", error=str(e))
 
