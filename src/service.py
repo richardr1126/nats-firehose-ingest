@@ -207,7 +207,7 @@ class Service:
 
                 # Log stats
                 log.info(
-                    "stats",
+                    "ingest stats",
                     cursor=self.firehose.cursor if self.firehose is not None else None,
                     queue_size=self.ops_queue.qsize(),
                     matched_per_second=mps_rate,
