@@ -2,6 +2,44 @@
 
 A high-performance Python microservice for ingesting Bluesky firehose data into NATS JetStream for real-time sentiment analysis and processing. This service is part of a larger Kubernetes-based real-time sentiment analysis dashboard.
 
+## 🚀 Quickstart
+
+### Local Development (Docker)
+
+```bash
+# Start firehose ingest with docker compose watch for live reloading
+docker compose watch
+```
+
+### Local Development (Python)
+
+```bash
+# uv is the recommended way to install dependencies
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies and run
+uv sync --frozen
+source .venv/bin/activate
+python main.py
+```
+
+### Kubernetes Deployment
+
+```bash
+# Clone the repository
+git clone https://github.com/richardr1126/nats-firehose-ingest.git
+cd nats-firehose-ingest
+
+# Configure environment variables
+cp charts/.env.example charts/.env
+# Edit charts/.env with your NATS configuration
+
+# Deploy to Kubernetes
+cd charts
+./create-secrets.sh
+helm install nats-firehose-ingest ./nats-firehose-ingest
+```
+
 ## 🚀 Features
 
 - **Real-time Post Ingestion**: Connects to Bluesky's ATProto firehose for live post streaming (posts only)
@@ -12,55 +50,6 @@ A high-performance Python microservice for ingesting Bluesky firehose data into 
 - **Production Ready**: Health checks, metrics, structured logging, and Kubernetes deployment
 - **Containerized**: Docker image built with uv for fast, reproducible deployments
 - **Observable**: Prometheus metrics, health endpoints, and detailed logging
-
-## 📋 Prerequisites
-
-- Python 3.13+
-- Docker (for containerization)
-- Kubernetes cluster with NATS JetStream deployed
-- uv package manager
-
-## 🛠 Installation
-
-### Local Development
-
-1. **Clone and setup**:
-   ```bash
-   cd nats-firehose-ingest
-   uv sync
-   ```
-
-2. **Configure environment**:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your NATS configuration
-   ```
-
-3. **Run locally**:
-   ```bash
-   uv run python main.py
-   ```
-
-### Docker Build
-
-```bash
-# Build the container
-docker build -t nats-firehose-ingest:latest .
-
-# Run with environment variables
-docker run -e NATS_URL=nats://your-nats:4222 nats-firehose-ingest:latest
-```
-
-### Kubernetes Deployment
-
-```bash
-# Deploy to your cluster
-kubectl apply -f k8s-deployment.yaml
-
-# Check status
-kubectl get pods -l app=nats-firehose-ingest
-kubectl logs -f deployment/nats-firehose-ingest
-```
 
 ## ⚙️ Configuration
 
