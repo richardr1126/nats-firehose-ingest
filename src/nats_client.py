@@ -46,7 +46,7 @@ class NatsClient:
                 retention=RetentionPolicy.LIMITS,
                 discard=DiscardPolicy.OLD,
                 max_msgs_per_subject=-1,
-                max_msgs=-1,
+                max_msgs=5_000_000,
                 max_bytes=-1,
                 max_age=0,
                 storage=StorageType.FILE,
