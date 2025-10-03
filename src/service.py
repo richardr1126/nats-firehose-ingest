@@ -126,6 +126,8 @@ class Service:
             # Extract total event count from firehose
             events_batch = operations.pop('_event_count', 0)
             self.last_events_count += events_batch
+            # Extract batch cursor if provided
+            batch_cursor = operations.pop('_cursor', None)
 
             # Increment operations counter for visibility
             count_batch = 0
@@ -168,9 +170,12 @@ class Service:
             if self._last_save >= settings.CURSOR_SAVE_INTERVAL:
                 self._last_save = 0
                 try:
-                    # firehose may be None only briefly during startup; guard just in case
-                    if self.firehose is not None:
-                        await self.nats.save_cursor(settings.SERVICE_NAME, self.firehose.cursor)
+                    # Prefer the batch cursor to avoid reading cross-thread state
+                    cursor_to_save = batch_cursor
+                    if cursor_to_save is None and self.firehose is not None:
+                        cursor_to_save = self.firehose.cursor
+                    if cursor_to_save is not None:
+                        await self.nats.save_cursor(settings.SERVICE_NAME, cursor_to_save)
                 except Exception:
                     # Preserve original behavior: swallow persistent save errors
                     pass

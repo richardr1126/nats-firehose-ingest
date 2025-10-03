@@ -114,6 +114,20 @@ class NatsClient:
         if not self.kv:
             return
         try:
+            # Skip invalid cursors
+            if cursor is None:
+                return
+            # Load existing to ensure we never regress
+            try:
+                entry = await self.kv.get(service_name)
+                if entry and entry.value:
+                    current = int(entry.value.decode("utf-8"))
+                    if cursor <= current:
+                        # Do not overwrite with an older or equal cursor
+                        return
+            except Exception:
+                # If we fail to read, proceed to write best-effort
+                pass
             await self.kv.put(service_name, str(cursor).encode("utf-8"))
         except Exception as e:
             log.warning("kv_put_failed", error=str(e))

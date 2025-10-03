@@ -60,22 +60,10 @@ class FirehoseRunner:
         ):
         self.service_name = service_name
         self.on_ops = on_ops
-        self._cursor = initial_cursor or None
-        self._cursor_lock = threading.Lock()
-        params = models.ComAtprotoSyncSubscribeRepos.Params(cursor=self._cursor)
+        self.cursor = initial_cursor or None
+        params = models.ComAtprotoSyncSubscribeRepos.Params(cursor=self.cursor)
         self.client = FirehoseSubscribeReposClient(params)
         self._thread: Optional[threading.Thread] = None
-    
-    @property
-    def cursor(self) -> Optional[int]:
-        """Thread-safe cursor getter."""
-        with self._cursor_lock:
-            return self._cursor
-    
-    def _set_cursor(self, value: int) -> None:
-        """Thread-safe cursor setter (internal use only)."""
-        with self._cursor_lock:
-            self._cursor = value
 
     def start(self):
         def on_message(message: firehose_models.MessageFrame) -> None:
@@ -91,10 +79,18 @@ class FirehoseRunner:
                 return
 
             # Periodic cursor update logging handled by orchestrator; we just forward ops
-            self._set_cursor(commit.seq)
+            # Guard against cursor regression due to out-of-order or replayed frames
+            try:
+                if self.cursor is None or (isinstance(commit.seq, int) and commit.seq > self.cursor):
+                    self.cursor = commit.seq
+            except Exception:
+                # In case of unexpected types, fall back to direct assignment
+                self.cursor = commit.seq
             ops, total_events = _get_ops_by_type(commit)
             # Add event count to operations dict
             ops['_event_count'] = total_events
+            # Pass the cursor along with the batch to avoid cross-thread reads
+            ops['_cursor'] = commit.seq
             self.on_ops(ops)
 
         self._thread = threading.Thread(target=lambda: self.client.start(on_message), daemon=True)
