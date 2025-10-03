@@ -60,10 +60,22 @@ class FirehoseRunner:
         ):
         self.service_name = service_name
         self.on_ops = on_ops
-        self.cursor = initial_cursor or None
-        params = models.ComAtprotoSyncSubscribeRepos.Params(cursor=self.cursor)
+        self._cursor = initial_cursor or None
+        self._cursor_lock = threading.Lock()
+        params = models.ComAtprotoSyncSubscribeRepos.Params(cursor=self._cursor)
         self.client = FirehoseSubscribeReposClient(params)
         self._thread: Optional[threading.Thread] = None
+    
+    @property
+    def cursor(self) -> Optional[int]:
+        """Thread-safe cursor getter."""
+        with self._cursor_lock:
+            return self._cursor
+    
+    def _set_cursor(self, value: int) -> None:
+        """Thread-safe cursor setter (internal use only)."""
+        with self._cursor_lock:
+            self._cursor = value
 
     def start(self):
         def on_message(message: firehose_models.MessageFrame) -> None:
@@ -79,7 +91,7 @@ class FirehoseRunner:
                 return
 
             # Periodic cursor update logging handled by orchestrator; we just forward ops
-            self.cursor = commit.seq
+            self._set_cursor(commit.seq)
             ops, total_events = _get_ops_by_type(commit)
             # Add event count to operations dict
             ops['_event_count'] = total_events
