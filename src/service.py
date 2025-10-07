@@ -14,6 +14,7 @@ from .logging_setup import get_logger
 from .metrics import operations_total, messages_per_second, events_per_second, firehose_cursor, ops_queue_size
 from .nats_client import NatsClient
 from .health import create_health_api
+from .types import RawPost
 
 
 log = get_logger(__name__)
@@ -135,24 +136,19 @@ class Service:
             created_posts = operations.get("app.bsky.feed.post", {}).get("created", [])
             for post in created_posts:
                 record = post.get("record")
-                # The original code used getattr(record, "text", None). Use dict access to
-                # retain behavior when record is a mapping while being clearer.
-                text = None
-                if isinstance(record, dict):
-                    text = record.get("text")
-                else:
-                    # Fallback to attribute access to preserve behavior for non-dict records
-                    text = getattr(record, "text", None)
+
+                text = getattr(record, "text", None)
 
                 if not self.post_filter.allow(text):
                     continue
 
-                # Build payload
-                payload: Dict[str, Any] = {
+                # Build payload using RawPost type
+                payload: RawPost = {
                     "uri": post.get("uri"),
                     "cid": post.get("cid"),
                     "author": post.get("author"),
                     "text": text,
+                    "created_at": getattr(record, "created_at", None),
                 }
                 data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
