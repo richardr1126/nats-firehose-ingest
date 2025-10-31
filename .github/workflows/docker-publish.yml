@@ -170,9 +170,11 @@ jobs:
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          tags=$(echo '${{ needs.prepare.outputs.tags }}' | tr '\n' ' ')
-          docker buildx imagetools create $tags \
+          docker buildx imagetools create \
+            $(echo "$TAGS" | xargs -I {} echo -t {}) \
             $(printf '${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+        env:
+          TAGS: ${{ needs.prepare.outputs.tags }}
           
       - name: Create or update package visibility
         run: |
