@@ -90,3 +90,12 @@ envFrom:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Prometheus metrics configuration
+metrics:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+    # Additional labels for ServiceMonitor (optional)
+    additionalLabels: {}
