@@ -39,19 +39,6 @@
   📈 Metrics:          http://$SERVICE_IP:{{ .Values.service.port }}/metrics
 {{- end }}
 
-📝 Useful Commands:
-  # View logs
-  kubectl logs --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "nats-firehose-ingest.name" . }}" -f
-
-  # Get pod status
-  kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "nats-firehose-ingest.name" . }}"
-
-  # Check service status
-  kubectl get svc --namespace {{ .Release.Namespace }} {{ include "nats-firehose-ingest.fullname" . }}
-
-  # View environment variables
-  kubectl get secret --namespace {{ .Release.Namespace }} {{ (index .Values.envFrom 0).secretRef.name | default "nats-firehose-ingest-env" }} -o yaml
-
 🔧 Configuration:
   Secret Name: nats-firehose-ingest-env
   
